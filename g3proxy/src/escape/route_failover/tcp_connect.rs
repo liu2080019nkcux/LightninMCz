@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-use tokio::task::JoinSet;
+use std::pin::pin;
 
 use g3_daemon::stat::remote::ArcTcpConnectionTaskRemoteStats;
 use g3_types::net::UpstreamAddr;
@@ -26,30 +26,37 @@ use crate::serve::ServerTaskNotes;
 
 pub struct TcpConnectFailoverContext {
     tcp_notes: TcpConnectTaskNotes,
-    task_notes: ServerTaskNotes,
     connect_result: TcpConnectResult,
 }
 
 impl TcpConnectFailoverContext {
-    fn new(upstream: &UpstreamAddr, task_notes: &ServerTaskNotes) -> Self {
+    fn new(upstream: &UpstreamAddr) -> Self {
         let tcp_notes = TcpConnectTaskNotes::new(upstream.clone());
         TcpConnectFailoverContext {
             tcp_notes,
-            task_notes: task_notes.dup_for_read(),
-            connect_result: Err(TcpConnectError::NoAddressConnected),
+            connect_result: Err(TcpConnectError::EscaperNotUsable),
         }
     }
 
     async fn run(
         mut self,
-        escaper: ArcEscaper,
+        escaper: &ArcEscaper,
+        task_notes: &ServerTaskNotes,
         task_stats: ArcTcpConnectionTaskRemoteStats,
-    ) -> Self {
-        let r = escaper
-            .tcp_setup_connection(&mut self.tcp_notes, &self.task_notes, task_stats)
-            .await;
-        self.connect_result = r;
-        self
+    ) -> Result<Self, Self> {
+        match escaper
+            .tcp_setup_connection(&mut self.tcp_notes, task_notes, task_stats)
+            .await
+        {
+            Ok(c) => {
+                self.connect_result = Ok(c);
+                Ok(self)
+            }
+            Err(e) => {
+                self.connect_result = Err(e);
+                Err(self)
+            }
+        }
     }
 }
 
@@ -60,54 +67,49 @@ impl RouteFailoverEscaper {
         task_notes: &'a ServerTaskNotes,
         task_stats: ArcTcpConnectionTaskRemoteStats,
     ) -> TcpConnectResult {
-        let mut c_set = JoinSet::new();
+        let primary_context = TcpConnectFailoverContext::new(&tcp_notes.upstream);
+        let mut primary_task =
+            pin!(primary_context.run(&self.primary_node, task_notes, task_stats.clone()));
 
-        let primary_context = TcpConnectFailoverContext::new(&tcp_notes.upstream, task_notes);
-        c_set.spawn(primary_context.run(self.primary_node.clone(), task_stats.clone()));
-
-        let mut error = TcpConnectError::EscaperNotUsable;
-
-        match tokio::time::timeout(self.config.fallback_delay, c_set.join_next()).await {
-            Ok(Some(Ok(d))) => match d.connect_result {
-                Ok(c) => {
-                    self.stats.add_request_passed();
-                    tcp_notes.fill_generated(&d.tcp_notes);
-                    return Ok(c);
-                }
-                Err(e) => error = e,
-            },
-            Ok(Some(Err(_))) => {
-                return Err(TcpConnectError::InternalServerError(
-                    "failed to join tcp connect task",
-                ))
+        match tokio::time::timeout(self.config.fallback_delay, &mut primary_task).await {
+            Ok(Ok(ctx)) => {
+                self.stats.add_request_passed();
+                tcp_notes.fill_generated(&ctx.tcp_notes);
+                return ctx.connect_result;
             }
-            Ok(None) => {
-                unreachable!()
-            }
-            Err(_) => {} // Timed out, now try standby
-        }
-
-        let standby_context = TcpConnectFailoverContext::new(&tcp_notes.upstream, task_notes);
-        c_set.spawn(standby_context.run(self.standby_node.clone(), task_stats));
-
-        while let Some(r) = c_set.join_next().await {
-            match r {
-                Ok(d) => match d.connect_result {
+            Ok(Err(_)) => {
+                return match self
+                    .standby_node
+                    .tcp_setup_connection(tcp_notes, task_notes, task_stats)
+                    .await
+                {
                     Ok(c) => {
                         self.stats.add_request_passed();
-                        tcp_notes.fill_generated(&d.tcp_notes);
-                        return Ok(c);
+                        Ok(c)
                     }
-                    Err(e) => error = e,
-                },
-                Err(_) => {
-                    return Err(TcpConnectError::InternalServerError(
-                        "failed to join tcp connect task",
-                    ));
+                    Err(e) => {
+                        self.stats.add_request_failed();
+                        Err(e)
+                    }
                 }
             }
+            Err(_) => {}
         }
 
-        Err(error)
+        let standby_context = TcpConnectFailoverContext::new(&tcp_notes.upstream);
+        let standby_task = pin!(standby_context.run(&self.standby_node, task_notes, task_stats));
+
+        match futures_util::future::select_ok([primary_task, standby_task]).await {
+            Ok((ctx, _left)) => {
+                self.stats.add_request_passed();
+                tcp_notes.fill_generated(&ctx.tcp_notes);
+                ctx.connect_result
+            }
+            Err(ctx) => {
+                self.stats.add_request_failed();
+                tcp_notes.fill_generated(&ctx.tcp_notes);
+                ctx.connect_result
+            }
+        }
     }
 }
