@@ -41,12 +41,7 @@ fn mermaid_auditor(content: &mut String) {
     let _ = content.write_str("  subgraph Auditor\n");
     for config in crate::config::audit::get_all() {
         let name = config.name();
-        let _ = writeln!(
-            content,
-            "    auditor_{}[\"{}\"]",
-            name_to_id(name),
-            name.escape_debug()
-        );
+        let _ = writeln!(content, "    auditor_{name}[{name}]",);
     }
     let _ = content.write_str("  end\n");
 }
@@ -55,12 +50,7 @@ fn mermaid_user_group(content: &mut String) {
     let _ = content.write_str("  subgraph UserGroup\n");
     for config in crate::config::auth::get_all() {
         let name = config.name();
-        let _ = writeln!(
-            content,
-            "    user_group_{}[\"{}\"]",
-            name_to_id(name),
-            name.escape_debug()
-        );
+        let _ = writeln!(content, "    user_group_{name}[{name}]",);
     }
     let _ = content.write_str("  end\n");
 }
@@ -72,22 +62,13 @@ fn mermaid_resolver(content: &mut String) -> anyhow::Result<()> {
     let _ = content.write_str("  subgraph Resolver\n");
     for c in &all_resolver {
         let name = c.name();
-        let _ = writeln!(
-            content,
-            "    resolver_{}[\"{}\"]",
-            name_to_id(name),
-            name.escape_debug()
-        );
+        let _ = writeln!(content, "    resolver_{name}[{name}]");
     }
     for c in &all_resolver {
         if let Some(d) = c.dependent_resolver() {
+            let s_name = c.name();
             for v in d {
-                let _ = writeln!(
-                    content,
-                    "    resolver_{} --> resolver_{}",
-                    name_to_id(c.name()),
-                    name_to_id(&v)
-                );
+                let _ = writeln!(content, "    resolver_{s_name} --> resolver_{v}");
             }
         }
     }
@@ -102,22 +83,13 @@ fn mermaid_escaper(content: &mut String) -> anyhow::Result<()> {
     let _ = content.write_str("  subgraph Escaper\n");
     for c in &all_escaper {
         let name = c.name();
-        let _ = writeln!(
-            content,
-            "    escaper_{}[\"{}\"]",
-            name_to_id(name),
-            name.escape_debug()
-        );
+        let _ = writeln!(content, "    escaper_{name}[{name}]",);
     }
     for c in &all_escaper {
         if let Some(d) = c.dependent_escaper() {
+            let s_name = c.name();
             for v in d {
-                let _ = writeln!(
-                    content,
-                    "    escaper_{} --> escaper_{}",
-                    name_to_id(c.name()),
-                    name_to_id(&v)
-                );
+                let _ = writeln!(content, "    escaper_{s_name} --> escaper_{v}",);
             }
         }
     }
@@ -126,12 +98,7 @@ fn mermaid_escaper(content: &mut String) -> anyhow::Result<()> {
     for c in &all_escaper {
         let r = c.resolver();
         if !r.is_empty() {
-            let _ = writeln!(
-                content,
-                "  escaper_{} -. dns .-> resolver_{}",
-                name_to_id(c.name()),
-                name_to_id(r)
-            );
+            let _ = writeln!(content, "  escaper_{} -. dns .-> resolver_{r}", c.name(),);
         }
     }
 
@@ -145,61 +112,36 @@ fn mermaid_server(content: &mut String) -> anyhow::Result<()> {
     let _ = content.write_str("  subgraph Server\n");
     for c in &all_server {
         let name = c.name();
-        let _ = writeln!(
-            content,
-            "    server_{}[\"{}\"]",
-            name_to_id(name),
-            name.escape_debug()
-        );
+        let _ = writeln!(content, "    server_{name}[{name}]",);
     }
     for c in &all_server {
         if let Some(d) = c.dependent_server() {
+            let s_name = c.name();
             for v in d {
-                let _ = writeln!(
-                    content,
-                    "    server_{} --> server_{}",
-                    name_to_id(c.name()),
-                    name_to_id(&v)
-                );
+                let _ = writeln!(content, "    server_{s_name} --> server_{v}",);
             }
         }
     }
     let _ = content.write_str("  end\n");
 
     for c in &all_server {
-        let s_id = name_to_id(c.name());
+        let s_name = c.name();
 
         let e = c.escaper();
         if !e.is_empty() {
-            let _ = writeln!(content, "  server_{s_id} --> escaper_{}", name_to_id(e));
+            let _ = writeln!(content, "  server_{s_name} --> escaper_{e}");
         }
 
         let u = c.user_group();
         if !u.is_empty() {
-            let _ = writeln!(
-                content,
-                "  server_{s_id} o-. auth .-o user_group_{}",
-                name_to_id(u)
-            );
+            let _ = writeln!(content, "  server_{s_name} o-. auth .-o user_group_{u}",);
         }
 
         let a = c.auditor();
         if !a.is_empty() {
-            let _ = writeln!(content, "  server_{s_id} <--> auditor_{}", name_to_id(a));
+            let _ = writeln!(content, "  server_{s_name} <--> auditor_{a}");
         }
     }
 
     Ok(())
-}
-
-fn name_to_id(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_alphanumeric() || matches!(c, '-' | '_') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
