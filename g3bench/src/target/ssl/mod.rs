@@ -24,7 +24,7 @@ mod opts;
 use opts::BenchSslArgs;
 
 mod stats;
-use stats::{SslHistogram, SslHistogramRecorder, SslRuntimeStats};
+pub(crate) use stats::{SslHistogram, SslHistogramRecorder, SslRuntimeStats};
 
 mod task;
 use task::SslTaskContext;
