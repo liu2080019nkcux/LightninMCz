@@ -17,5 +17,14 @@
 mod pkey;
 mod serial;
 
+mod subject;
+pub use subject::SubjectNameBuilder;
+
+mod time;
+use time::asn1_time_from_chrono;
+
 mod server;
 pub use server::ServerCertBuilder;
+
+mod client;
+pub use client::ClientCertBuilder;

@@ -15,18 +15,19 @@
  */
 
 use anyhow::{anyhow, Context};
-use chrono::{DateTime, Datelike, Days, Utc};
+use chrono::{Days, Utc};
 use openssl::asn1::{Asn1Integer, Asn1Time};
 use openssl::hash::MessageDigest;
-use openssl::nid::Nid;
 use openssl::pkey::{PKey, Private};
 use openssl::x509::extension::{
     AuthorityKeyIdentifier, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName,
     SubjectKeyIdentifier,
 };
-use openssl::x509::{X509Builder, X509Extension, X509Name, X509Ref, X509};
+use openssl::x509::{X509Builder, X509Extension, X509Ref, X509};
 
 use g3_types::net::Host;
+
+use super::{asn1_time_from_chrono, SubjectNameBuilder};
 
 pub struct ServerCertBuilder {
     pkey: PKey<Private>,
@@ -36,6 +37,7 @@ pub struct ServerCertBuilder {
     not_before: Asn1Time,
     not_after: Asn1Time,
     digest: MessageDigest,
+    subject_builder: SubjectNameBuilder,
 }
 
 macro_rules! impl_new {
@@ -97,7 +99,13 @@ impl ServerCertBuilder {
             not_before,
             not_after,
             digest: MessageDigest::sha256(),
+            subject_builder: SubjectNameBuilder::default(),
         })
+    }
+
+    #[inline]
+    pub fn subject_builder_mut(&mut self) -> &mut SubjectNameBuilder {
+        &mut self.subject_builder
     }
 
     #[inline]
@@ -184,9 +192,10 @@ impl ServerCertBuilder {
         let mut san = SubjectAlternativeName::new();
         match host {
             Host::Domain(domain) => {
-                let mut name = X509Name::builder().unwrap();
-                name.append_entry_by_nid(Nid::COMMONNAME, domain).unwrap();
-                let name = name.build();
+                let name = self
+                    .subject_builder
+                    .build_for_server(domain)
+                    .context("failed to build subject name")?;
                 builder
                     .set_subject_name(&name)
                     .map_err(|e| anyhow!("failed to set subject name: {e}"))?;
@@ -194,10 +203,11 @@ impl ServerCertBuilder {
                 san.dns(domain);
             }
             Host::Ip(ip) => {
-                let mut name = X509Name::builder().unwrap();
                 let text = ip.to_string();
-                name.append_entry_by_nid(Nid::COMMONNAME, &text).unwrap();
-                let name = name.build();
+                let name = self
+                    .subject_builder
+                    .build_for_server(&text)
+                    .context("failed to build subject name")?;
                 builder
                     .set_subject_name(&name)
                     .map_err(|e| anyhow!("failed to set subject name: {e}"))?;
@@ -238,13 +248,4 @@ impl ServerCertBuilder {
 
         Ok(builder.build())
     }
-}
-
-fn asn1_time_from_chrono(datetime: &DateTime<Utc>) -> anyhow::Result<Asn1Time> {
-    let lazy_fmt = if datetime.year() >= 2050 {
-        datetime.format_with_items(g3_datetime::format::asn1::RFC5280_GENERALIZED.iter())
-    } else {
-        datetime.format_with_items(g3_datetime::format::asn1::RFC5280_UTC.iter())
-    };
-    Asn1Time::from_str(&format!("{lazy_fmt}")).map_err(|e| anyhow!("failed to get asn1 time: {e}"))
 }
